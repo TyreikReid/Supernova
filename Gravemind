@@ -1,0 +1,26 @@
+<#
+.SYNOPSIS
+    My toolkit
+
+.DESCRIPTION
+    Call function manually to better assist w/ work itself.
+
+.TOOLS
+    Available tools:
+    - Get-UserList
+    - Install-Software
+    - Clean-TempFiles
+    - Check-NetworkStatus
+
+.EXAMPLE
+    PS> . .\MyToolbox.ps1  # Dot-source to load functions into session
+    PS> Get-UserList       # Now you can call any function
+#>
+
+Write-Host "----------------------------------"
+Write-Host "The monument to all your sins."
+Write-Host "----------------------------------"
+Write-Host "1. Update Windows PC"
+Write-Host "2. Clear storage space"
+Write-Host "3. Speed test"
+Write-Host "4. Net Adapter Tool"
