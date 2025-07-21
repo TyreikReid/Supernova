@@ -11,10 +11,6 @@
     - Install-Software
     - Clean-TempFiles
     - Check-NetworkStatus
-
-.EXAMPLE
-    PS> . .\MyToolbox.ps1  # Dot-source to load functions into session
-    PS> Get-UserList       # Now you can call any function
 #>
 
 Write-Host "----------------------------------"
@@ -24,3 +20,242 @@ Write-Host "1. Update Windows PC"
 Write-Host "2. Clear storage space"
 Write-Host "3. Speed test"
 Write-Host "4. Net Adapter Tool"
+Write-Host "To exit, press 0."
+
+Function UpdateWindows {
+        # Part 1: Show last 5 installed updates
+    Write-Host "Retrieving the last 5 Windows Update events..." -ForegroundColor Green
+    try {
+        $lastUpdates = Get-WinEvent -LogName System -FilterXPath '
+            *[System[Provider[@Name="Microsoft-Windows-WindowsUpdateClient"] and
+            (EventID=19 or EventID=20)]]' | 
+            Select-Object -First 5 -Property TimeCreated, Message
+
+        if ($lastUpdates) {
+            Write-Host "`nLast 5 Installed Updates:" -ForegroundColor Green
+            $lastUpdates | Format-Table TimeCreated, Message -AutoSize
+        } else {
+            Write-Host "No previous updates found in the system logs." -ForegroundColor Red
+        }
+    } catch {
+        Write-Host "Error: Failed to retrieve update history." -ForegroundColor Red
+        exit
+    }
+
+    # Wait for user input before proceeding
+    Write-Host "`nPress Enter to search for pending updates..." -ForegroundColor Green
+    Read-Host
+
+    # Part 2: Search for and handle pending updates
+    Write-Host "Checking for pending updates..." -ForegroundColor Green
+
+    # Ensure PSWindowsUpdate is installed
+    try {
+        if (!(Get-Module -ListAvailable PSWindowsUpdate)) {
+            Install-Module PSWindowsUpdate -Force -Scope CurrentUser -ErrorAction Stop
+            Write-Host "PSWindowsUpdate module installed successfully." -ForegroundColor Green
+        }
+        Import-Module PSWindowsUpdate -ErrorAction Stop
+        Write-Host "PSWindowsUpdate module imported successfully." -ForegroundColor Green
+    } catch {
+        Write-Host "Error: Failed to install or import PSWindowsUpdate module." -ForegroundColor Red
+        exit
+    }
+
+    # Temporarily set execution policy to Bypass for this session
+    $originalPolicy = Get-ExecutionPolicy
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+
+    # Get outstanding updates
+    try {
+        $outstanding = Get-WindowsUpdate -ErrorAction Stop
+
+        if ($outstanding.Count -eq 0) {
+            Write-Host "No outstanding updates found." -ForegroundColor Green
+        } else {
+            Write-Host "`nThere are $($outstanding.Count) outstanding updates available." -ForegroundColor Green
+
+            # Display numbered list
+            Write-Host "`nAvailable Updates:" -ForegroundColor Yellow
+            for ($i = 0; $i -lt $outstanding.Count; $i++) {
+                $u = $outstanding[$i]
+                $num = $i + 1
+                Write-Host "[$num] $($u.KB) - $($u.Title) ($([math]::Round($u.Size/1MB,2)) MB)"
+            }
+
+            # Ask which to skip
+            Write-Host "`nEnter update numbers to SKIP (comma-separated), or press Enter to install all:" -ForegroundColor Cyan
+            $skipInput = Read-Host
+            $toInstall = if ([string]::IsNullOrWhiteSpace($skipInput)) {
+                $outstanding
+            } else {
+                # parse skip list
+                $skipNums = $skipInput -split '\s*,\s*' |
+                            Where-Object { $_ -match '^[0-9]+$' } |
+                            ForEach-Object { [int]$_ }
+                # filter
+                $outstanding | Where-Object { ($outstanding.IndexOf($_) + 1) -notin $skipNums }
+            }
+
+            if ($toInstall.Count -eq 0) {
+                Write-Host "No updates selected for installation." -ForegroundColor Yellow
+            } else {
+                Write-Host "`nInstalling $($toInstall.Count) updates..." -ForegroundColor Green
+                try {
+                    # install only selected updates
+                    foreach ($update in $toInstall) {
+        try {
+            Write-Host "Installing: $($update.Title)" -ForegroundColor Cyan
+            Install-WindowsUpdate -Title $update.Title -AcceptAll -IgnoreReboot -ErrorAction Stop
+        } catch {
+            Write-Host "Error installing $($update.Title): $_" -ForegroundColor Red
+        }
+    }
+
+                    Write-Host "Updates installed successfully." -ForegroundColor Green
+                } catch {
+                    Write-Host "Error: Failed to install updates. $_" -ForegroundColor Red
+                }
+            }
+        }
+    } catch {
+        Write-Host "Error: Failed to retrieve updates. $_" -ForegroundColor Red
+    }
+
+    # Reset execution policy to the original setting
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy $originalPolicy -Force
+    Write-Host "Execution policy reset to original settings." -ForegroundColor Green
+
+
+}
+Function NetAdapt {
+        function Show-Adapters {
+        do {
+            Clear-Host
+            $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
+            if (-not $adapters) {
+                Write-Error "No active network adapters found."
+                return
+            }
+
+            Write-Host "`nAvailable Network Adapters:" -ForegroundColor Cyan
+            Write-Host "0. Exit"
+            $adapters | ForEach-Object -Begin { $i = 1 } -Process {
+                Write-Host "$i. $($_.Name)"
+                $i++
+            }
+
+            $adapterChoice = Read-Host "`nSelect adapter number"
+            if ($adapterChoice -eq '0') { return }
+
+            $selectedAdapter = $adapters[$adapterChoice - 1]
+            if ($selectedAdapter) {
+                Show-Properties -AdapterName $selectedAdapter.Name
+            } else {
+                Write-Host "❌ Invalid selection. Press Enter to try again." -ForegroundColor Red
+                Read-Host
+            }
+
+        } while ($true)
+    }
+
+    function Show-Properties {
+        param ([string]$AdapterName)
+
+        do {
+            Clear-Host
+            $props = Get-NetAdapterAdvancedProperty -Name $AdapterName
+            if (-not $props) {
+                Write-Error "No advanced properties found for $AdapterName"
+                return
+            }
+
+            Write-Host "`nAdvanced Properties for adapter: $AdapterName" -ForegroundColor Cyan
+            Write-Host "0. Back"
+            $props | ForEach-Object -Begin { $j = 1 } -Process {
+                Write-Host "$j. $($_.DisplayName): $($_.DisplayValue)"
+                $j++
+            }
+
+            $propChoice = Read-Host "`nSelect property number to modify"
+            if ($propChoice -eq '0') { return }
+
+            $selectedProp = $props[$propChoice - 1]
+            if ($selectedProp) {
+                Show-PropertyEditor -AdapterName $AdapterName -Prop $selectedProp
+            } else {
+                Write-Host "❌ Invalid selection. Press Enter to try again." -ForegroundColor Red
+                Read-Host
+            }
+
+        } while ($true)
+    }
+
+    function Show-PropertyEditor {
+        param (
+            [string]$AdapterName,
+            $Prop
+        )
+
+        do {
+            Clear-Host
+            Write-Host "`nModify Property: $($Prop.DisplayName)" -ForegroundColor Yellow
+            Write-Host "Current Value: $($Prop.DisplayValue)"
+            Write-Host ""
+
+            # Try both singular and plural variants
+            $validValues = @()
+            if ($Prop.PSObject.Properties.Name -contains 'ValidDisplayValue') {
+                $validValues = $Prop.ValidDisplayValue
+            }
+            elseif ($Prop.PSObject.Properties.Name -contains 'ValidDisplayValues') {
+                $validValues = $Prop.ValidDisplayValues
+            }
+
+            if ($validValues.Count -gt 0) {
+                Write-Host "0. Back"
+                $validValues | ForEach-Object -Begin { $k = 1 } -Process {
+                    Write-Host "$k. $_"
+                    $k++
+                }
+
+                $valChoice = Read-Host "`nSelect new value number"
+                if ($valChoice -eq '0') { return }
+
+                $newValue = $validValues[$valChoice - 1]
+            } else {
+                $newValue = Read-Host "`nNo predefined values found. Enter new value manually (or 0 to cancel)"
+                if ($newValue -eq '0') { return }
+            }
+
+            try {
+                Set-NetAdapterAdvancedProperty -Name $AdapterName `
+                    -DisplayName $Prop.DisplayName `
+                    -DisplayValue $newValue -NoRestart
+                Write-Host "`n✅ Property updated successfully!" -ForegroundColor Green
+            } catch {
+                Write-Error "❌ Failed to update property: $_"
+            }
+
+            Read-Host "`nPress Enter to return"
+            return
+
+        } while ($true)
+    }
+
+
+    # Launch the interactive tool
+    Show-Adapters
+
+}
+$MenuVar = 999
+
+While ($MenuVar -ne 0 ) {
+    $MenuVar = Read-Host "THE ONE" 
+    if ($MenuVar -eq 1) {
+        UpdateWindows
+    }
+     if ($MenuVar -eq 2) {
+        NetAdapt
+    }
+}
