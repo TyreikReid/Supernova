@@ -13,15 +13,6 @@
     - Check-NetworkStatus
 #>
 
-Write-Host "----------------------------------"
-Write-Host "The monument to all your sins."
-Write-Host "----------------------------------"
-Write-Host "1. Update Windows PC"
-Write-Host "2. Clear storage space"
-Write-Host "3. Speed test"
-Write-Host "4. Net Adapter Tool"
-Write-Host "To exit, press 0."
-
 Function UpdateWindows {
         # Part 1: Show last 5 installed updates
     Write-Host "Retrieving the last 5 Windows Update events..." -ForegroundColor Green
@@ -248,14 +239,146 @@ Function NetAdapt {
     Show-Adapters
 
 }
+Function SpeedTest {
+    # Define package name
+$PackageName = "speedtest"
+
+# Check if installed
+$PackageCheck = choco list --local-only | Select-String "^$PackageName\s"
+
+if ($PackageCheck) {
+    Write-Host "✔ $PackageName is already installed. Reinstalling..."
+    choco install $PackageName --force -y
+} else {
+    Write-Host " $PackageName not found. Installing..."
+    choco install $PackageName -y
+}
+
+# Run it from Chocolatey's bin folder
+$ExePath = "$env:ChocolateyInstall\bin\speedtest.exe"
+
+if (Test-Path $ExePath) {
+    Write-Host "`n=== 25 down, 3 up ==="
+    & $ExePath
+} else {
+    Write-Host " ERROR: speedtest.exe not found at $ExePath"
+}
+
+}
+Function ClearSpace {
+   # Set Execution Policy to bypass for the current session
+Set-ExecutionPolicy Bypass -Scope Process -Force
+
+# Function to get the available free space on the drive
+function Get-FreeSpace {
+    $drive = Get-PSDrive -Name C
+    return $drive.Used, $drive.Free
+}
+
+# Record initial free space
+$initialUsedSpace, $initialFreeSpace = Get-FreeSpace
+
+# Start Component Cleanup using DISM
+Write-Host "Starting DISM component cleanup..."
+Start-Process -FilePath "Dism.exe" -ArgumentList "/online /Cleanup-Image /StartComponentCleanup /ResetBase" -Wait
+Write-Host "DISM cleanup complete."
+
+# Stop Windows Update services to clean SoftwareDistribution folder contents
+Write-Host "Stopping Windows Update and Background Intelligent Transfer services... "
+Stop-Service -Name wuauserv -ErrorAction SilentlyContinue
+Stop-Service -Name bits -ErrorAction SilentlyContinue
+Write-Host "Services stopped."
+
+# Clean up the SoftwareDistribution folder contents using robocopy
+$SoftwareDistributionPath = "C:\Windows\SoftwareDistribution"
+if (Test-Path $SoftwareDistributionPath -ErrorAction SilentlyContinue) {
+    Write-Host "Cleaning up SoftwareDistribution folder contents..."
+    # Use robocopy to effectively delete the contents
+    $TempPath = Join-Path $SoftwareDistributionPath "empty"
+    New-Item -ItemType Directory -Path $TempPath -Force | Out-Null
+    robocopy $TempPath $SoftwareDistributionPath /MIR /XD $TempPath
+    Remove-Item -Recurse -Force -Path $TempPath
+    Write-Host "SoftwareDistribution folder contents deleted."
+} else {
+    Write-Host "SoftwareDistribution folder not found."
+}
+
+# Restart the stopped services (Windows Update and BITS)
+Write-Host "Restarting Windows Update and Background Intelligent Transfer services... "
+Start-Service -Name wuauserv -ErrorAction SilentlyContinue
+Start-Service -Name bits -ErrorAction SilentlyContinue
+Write-Host "Services restarted."
+
+# Cleanup temp files for all user profiles except "Public" and "Default"
+Write-Host "Cleaning temp files for all users except 'Public' and 'Default'..."
+
+# Get all user profile directories except "Public" and "Default"
+$UserProfiles = Get-ChildItem "C:\Users" | Where-Object { 
+    $_.Name -notin @('Public', 'Default') -and $_.PSIsContainer 
+}
+
+# Initialize a list to store the names of users whose temp files were deleted
+$deletedUsers = @()
+
+# Loop through each user profile and delete temp files
+foreach ($UserProfile in $UserProfiles) {
+    $TempFolder = Join-Path $UserProfile.FullName "AppData\Local\Temp"
+
+    if (Test-Path $TempFolder -ErrorAction SilentlyContinue) {
+        try {
+            # Delete all contents in the Temp folder
+            Get-ChildItem $TempFolder -Recurse | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+            $deletedUsers += $UserProfile.Name
+        } catch {
+            Write-Host "Failed to delete temp files for user: $($UserProfile.Name) - $_"
+        }
+    }
+}
+
+# Output the names of all users whose temp files were deleted, grouped together
+if ($deletedUsers.Count -gt 0) {
+    Write-Host "Temp files deleted for users: $($deletedUsers -join ', ')"
+} else {
+    Write-Host "No temp files were deleted."
+}
+
+Write-Host "Temp folder cleanup complete."
+
+# Calculate and output total space cleared
+$finalUsedSpace, $finalFreeSpace = Get-FreeSpace
+$spaceFreed = $finalFreeSpace - $initialFreeSpace
+
+Write-Host "Initial free space: $([math]::Round($initialFreeSpace / 1GB, 2)) GB"
+Write-Host "Final free space: $([math]::Round($finalFreeSpace / 1GB, 2)) GB"
+Write-Host "Total space freed: $([math]::Round($spaceFreed / 1GB, 2)) GB"
+
+Write-Host "Disk space cleanup complete."
+ 
+}
 $MenuVar = 999
 
 While ($MenuVar -ne 0 ) {
-    $MenuVar = Read-Host "THE ONE" 
+    Clear-Host
+    Write-Host "----------------------------------"
+    Write-Host "Pick your poison."
+    Write-Host "----------------------------------"
+    Write-Host "1. Update Windows PC"
+    Write-Host "2. Configure adapters"
+    Write-Host "3. Clear space"
+    Write-Host "4. Speed test"
+    Write-Host "To exit, press 0."
+    $MenuVar = Read-Host "Choose your fighter" 
     if ($MenuVar -eq 1) {
         UpdateWindows
     }
      if ($MenuVar -eq 2) {
         NetAdapt
     }
+    if ($MenuVar -eq 4) {
+        SpeedTest
+    }
+    if ($MenuVar -eq 3) {
+        ClearSpace
+    }
+
 }
