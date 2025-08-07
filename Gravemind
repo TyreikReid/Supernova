@@ -1,16 +1,9 @@
 <#
 .SYNOPSIS
-    My toolkit
+   Tools to better assist w/ job functions.
 
 .DESCRIPTION
     Call function manually to better assist w/ work itself.
-
-.TOOLS
-    Available tools:
-    - Get-UserList
-    - Install-Software
-    - Clean-TempFiles
-    - Check-NetworkStatus
 #>
 
 Function UpdateWindows {
@@ -116,6 +109,7 @@ Function UpdateWindows {
     # Reset execution policy to the original setting
     Set-ExecutionPolicy -Scope Process -ExecutionPolicy $originalPolicy -Force
     Write-Host "Execution policy reset to original settings." -ForegroundColor Green
+    Read-Host "Press enter to continue."
 
 
 }
@@ -240,7 +234,7 @@ Function NetAdapt {
 
 }
 Function SpeedTest {
-    # Define package name
+# Define package name
 $PackageName = "speedtest"
 
 # Check if installed
@@ -248,10 +242,10 @@ $PackageCheck = choco list --local-only | Select-String "^$PackageName\s"
 
 if ($PackageCheck) {
     Write-Host "✔ $PackageName is already installed. Reinstalling..."
-    choco install $PackageName --force -y
+    choco install $PackageName --force -y > $null 2>&1
 } else {
-    Write-Host " $PackageName not found. Installing..."
-    choco install $PackageName -y
+    Write-Host "ℹ $PackageName not found. Installing..."
+    choco install $PackageName -y > $null 2>&1
 }
 
 # Run it from Chocolatey's bin folder
@@ -260,9 +254,12 @@ $ExePath = "$env:ChocolateyInstall\bin\speedtest.exe"
 if (Test-Path $ExePath) {
     Write-Host "`n=== 25 down, 3 up ==="
     & $ExePath
+    Write-Host "`nPress Enter to continue..."
+    Read-Host
 } else {
-    Write-Host " ERROR: speedtest.exe not found at $ExePath"
+    Write-Host "ERROR: speedtest.exe not found at $ExePath"
 }
+
 
 }
 Function ClearSpace {
@@ -359,15 +356,16 @@ $MenuVar = 999
 
 While ($MenuVar -ne 0 ) {
     Clear-Host
+    Write-Host "Version 1.0"
     Write-Host "----------------------------------"
-    Write-Host "Pick your poison."
+    Write-Host "Pick your poison." -ForegroundColor Red
     Write-Host "----------------------------------"
-    Write-Host "1. Update Windows PC"
-    Write-Host "2. Configure adapters"
-    Write-Host "3. Clear space"
-    Write-Host "4. Speed test"
-    Write-Host "To exit, press 0."
-    $MenuVar = Read-Host "Choose your fighter" 
+    Write-Host "1. Update Windows PC" -ForegroundColor Blue
+    Write-Host "2. Configure adapters" -ForegroundColor Blue
+    Write-Host "3. Clear space" -ForegroundColor Blue
+    Write-Host "4. Speed test" -ForegroundColor Blue
+    Write-Host "To exit, press 0." -ForegroundColor Blue
+    $MenuVar = Read-Host "Choose your fighter"
     if ($MenuVar -eq 1) {
         UpdateWindows
     }
