@@ -277,8 +277,23 @@ $initialUsedSpace, $initialFreeSpace = Get-FreeSpace
 
 # Start Component Cleanup using DISM
 Write-Host "Starting DISM component cleanup..."
-Start-Process -FilePath "Dism.exe" -ArgumentList "/online /Cleanup-Image /StartComponentCleanup /ResetBase" -Wait
-Write-Host "DISM cleanup complete."
+
+try {
+    $process = Start-Process -FilePath "Dism.exe" `
+        -ArgumentList "/Online", "/Cleanup-Image", "/StartComponentCleanup", "/ResetBase" `
+        -WindowStyle Hidden -Wait -PassThru
+
+    if ($process.ExitCode -eq 0) {
+        Write-Host "DISM cleanup complete."
+    }
+    else {
+        Write-Host "DISM exited with code $($process.ExitCode)." -ForegroundColor Yellow
+    }
+}
+catch {
+    Write-Host "An error occurred while running DISM: $_" -ForegroundColor Red
+}
+
 
 # Stop Windows Update services to clean SoftwareDistribution folder contents
 Write-Host "Stopping Windows Update and Background Intelligent Transfer services... "
