@@ -368,293 +368,215 @@ Write-Host "Disk space cleanup complete."
  
 }
 Function Bookmark {
-    # Menu-driven browser bookmark exporter
-# Combines the simple HTML layout of the first script with the menu/UX of the second.
-# Outputs UTF-8 bookmark HTML files compatible with Chrome/Edge import.
+     # --------------------
+    # Menu-driven browser bookmark exporter for SYSTEM perspective
+    # --------------------
 
-# --------------------
-# Browser paths to locate bookmark sources
-$BrowserPaths = @{
-    "Google Chrome"     = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Bookmarks"
-    "Microsoft Edge"    = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Bookmarks"
-    "Mozilla Firefox"   = "$env:APPDATA\Mozilla\Firefox\Profiles"
-    "Internet Explorer" = "$env:USERPROFILE\Favorites"
-    "Brave"             = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Default\Bookmarks"
-    "Opera"             = "$env:APPDATA\Opera Software\Opera Stable\Bookmarks"
-}
-
-# Output setup
-$OutputFolder = Join-Path $env:TEMP "Browser_Bookmarks"
+    # Output setup
+# Output setup (replace the previous $OutputFolder definition)
+$OutputFolder = "C:\Temp\Browser_Bookmarks"
 if (-not (Test-Path $OutputFolder)) { New-Item -ItemType Directory -Path $OutputFolder | Out-Null }
 $LogFile = Join-Path $OutputFolder "Bookmark_Copy_Log.txt"
 "===== Bookmark Backup Run: $(Get-Date -Format u) =====" | Out-File -FilePath $LogFile -Append
 
-# --------------------
-# HTML header (Netscape/Chrome import friendly)
-function Start-BookmarkHtml { param($title = "Bookmarks")
-    return @"
+
+    # --------------------
+    # HTML header
+    function Start-BookmarkHtml { param($title = "Bookmarks")
+        return @"
 <!DOCTYPE NETSCAPE-Bookmark-file-1>
-<!-- This is an automatically generated file.
-     It will be read and overwritten.
-     DO NOT EDIT! -->
+<!-- Automatically generated -->
 <META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
 <TITLE>$title</TITLE>
 <H1>$title</H1>
 <DL><p>
 "@
-}
-
-# Timestamp conversion: Chrome stores microseconds since 1601; convert to UNIX seconds
-function Convert-ChromeTimestampToUnix {
-    param([string]$chromeTs)
-    if (-not $chromeTs) { return "" }
-    try {
-        $n = [int64]$chromeTs
-        if ($n -le 0) { return "" }
-        $unixSeconds = [math]::Floor(($n / 1000000) - 11644473600)
-        return [string]$unixSeconds
-    } catch { return "" }
-}
-
-# HTML encode helper
-function HtmlEncode([string]$s) { if ($null -eq $s) { return "" } ; return [System.Net.WebUtility]::HtmlEncode($s) }
-
-# Safe filename helper
-function Make-SafeFileName([string]$s) {
-    if ($null -eq $s) { return "bookmarks" }
-    $invalid = [System.IO.Path]::GetInvalidFileNameChars() + [System.IO.Path]::GetInvalidPathChars()
-    $out = $s
-    foreach ($c in $invalid) { $out = $out -replace [regex]::Escape($c), "_" }
-    $out = $out -replace "_+", "_"
-    return $out.Trim("_")
-}
-
-# --------------------
-# Chromium JSON -> Netscape Bookmark HTML (robust)
-function Convert-ChromiumBookmarksToHtml {
-    param(
-        [Parameter(Mandatory=$true)][string]$jsonPath,
-        [Parameter(Mandatory=$true)][string]$outputFile
-    )
-
-    if (-not (Test-Path $jsonPath)) { throw "Bookmarks JSON not found: $jsonPath" }
-
-    # Copy to temp to avoid lock issues
-    try {
-        $tmp = Join-Path $env:TEMP ("Bookmarks_copy_" + ([System.Guid]::NewGuid().ToString()) + ".json")
-        Copy-Item -Path $jsonPath -Destination $tmp -Force -ErrorAction Stop
-    } catch {
-        Add-Content -Path $LogFile -Value "Warning: could not copy Bookmarks file. Reading in place. $($_.Exception.Message)"
-        $tmp = $jsonPath
     }
 
-    $json = Get-Content $tmp -Raw | ConvertFrom-Json -ErrorAction Stop
-    $html = Start-BookmarkHtml "Bookmarks"
-
-    # recursive builder returns string (safe closure)
-    function Build-BookmarksHtml {
-        param($nodes, $level)
-        $out = ""
-        if (-not $nodes) { return $out }
-
-        foreach ($n in $nodes) {
-            # folder (be tolerant to 'folder' case)
-            if ($n.type -and ($n.type.ToString().ToLower() -eq "folder")) {
-                $name = if ($n.name) { $n.name } else { "Folder" }
-                $add = Convert-ChromeTimestampToUnix $n.date_added
-                $mod = Convert-ChromeTimestampToUnix $n.date_modified
-                $attrs = @()
-                if ($add) { $attrs += "ADD_DATE=`"$add`"" }
-                if ($mod) { $attrs += "LAST_MODIFIED=`"$mod`"" }
-                $attrString = if ($attrs.Count -gt 0) { " " + ($attrs -join " ") } else { "" }
-
-                $out += ("`t" * $level) + "<DT><H3$attrString>$([System.Net.WebUtility]::HtmlEncode($name))</H3>`n"
-                $out += ("`t" * $level) + "<DL><p>`n"
-
-                if ($n.children) { $out += Build-BookmarksHtml $n.children ($level + 1) }
-
-                $out += ("`t" * $level) + "</DL><p>`n"
-            }
-            # link (tolerant)
-            elseif ($n.url -or ($n.type -and ($n.type.ToString().ToLower() -eq "url"))) {
-                $title = if ($n.name) { $n.name } else { $n.url }
-                $url = $n.url
-                $add = Convert-ChromeTimestampToUnix $n.date_added
-                $itemAttrs = @()
-                if ($add) { $itemAttrs += "ADD_DATE=`"$add`"" }
-                if ($n.icon) { $itemAttrs += "ICON=`"$([System.Net.WebUtility]::HtmlEncode($n.icon))`"" }
-                $itemAttrString = if ($itemAttrs.Count -gt 0) { " " + ($itemAttrs -join " ") } else { "" }
-
-                $out += ("`t" * $level) + "<DT><A HREF=`"" + [System.Net.WebUtility]::HtmlEncode($url) + "`"$itemAttrString>$([System.Net.WebUtility]::HtmlEncode($title))</A>`n"
-            }
-            # unknown but has children
-            elseif ($n.children) {
-                $out += Build-BookmarksHtml $n.children $level
-            }
-        }
-        return $out
+    function Convert-ChromeTimestampToUnix { param([string]$chromeTs)
+        if (-not $chromeTs) { return "" }
+        try {
+            $n = [int64]$chromeTs
+            if ($n -le 0) { return "" }
+            $unixSeconds = [math]::Floor(($n / 1000000) - 11644473600)
+            return [string]$unixSeconds
+        } catch { return "" }
     }
 
-    # iterate all roots
-    foreach ($rootProp in $json.roots.PSObject.Properties) {
-        $rootName = $rootProp.Name
-        $root = $json.roots.$rootName
-        if (-not $root) { continue }
+    function HtmlEncode([string]$s) { if ($null -eq $s) { return "" } ; return [System.Net.WebUtility]::HtmlEncode($s) }
 
-        $isToolbar = ($rootName -eq "bookmark_bar")
-        $rootTitle = if ($root.name) { $root.name } else { $rootName }
-        $rootAdd = Convert-ChromeTimestampToUnix $root.date_added
-        $rootMod = Convert-ChromeTimestampToUnix $root.date_modified
-
-        $attrs = @()
-        if ($rootAdd) { $attrs += "ADD_DATE=`"$rootAdd`"" }
-        if ($rootMod) { $attrs += "LAST_MODIFIED=`"$rootMod`"" }
-        if ($isToolbar) { $attrs += "PERSONAL_TOOLBAR_FOLDER=`"true`"" }
-        $attrString = if ($attrs.Count -gt 0) { " " + ($attrs -join " ") } else { "" }
-
-        $html += "    <DT><H3$attrString>$([System.Net.WebUtility]::HtmlEncode($rootTitle))</H3>`n"
-        $html += "    <DL><p>`n"
-        $html += Build-BookmarksHtml $root.children 2
-        $html += "    </DL><p>`n"
+    function Make-SafeFileName([string]$s) {
+        if ($null -eq $s) { return "bookmarks" }
+        $invalid = [System.IO.Path]::GetInvalidFileNameChars() + [System.IO.Path]::GetInvalidPathChars()
+        $out = $s
+        foreach ($c in $invalid) { $out = $out -replace [regex]::Escape($c), "_" }
+        $out = $out -replace "_+", "_"
+        return $out.Trim("_")
     }
 
-    $html += "</DL><p>`n"
-
-    # write file (UTF8, no BOM)
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($html)
-    [System.IO.File]::WriteAllBytes($outputFile, $bytes)
-
-    if ($tmp -ne $jsonPath -and (Test-Path $tmp)) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
-}
-
-# --------------------
-# Firefox (places.sqlite) -> netscape HTML (simple)
-function Convert-FirefoxToHtml {
-    param([Parameter(Mandatory=$true)][string]$sqlitePath, [Parameter(Mandatory=$true)][string]$outputFile)
-    if (-not (Test-Path $sqlitePath)) { throw "Firefox places.sqlite not found: $sqlitePath" }
-    $tmpDb = Join-Path $env:TEMP ("places_copy_" + ([System.Guid]::NewGuid().ToString()) + ".sqlite")
-    Copy-Item -Path $sqlitePath -Destination $tmpDb -Force
-    $html = Start-BookmarkHtml "Firefox Bookmarks"
-    try {
-        if (-not ([type]::GetType("System.Data.SQLite.SQLiteConnection", $false))) {
-            try { [Reflection.Assembly]::LoadWithPartialName("System.Data.SQLite") | Out-Null } catch {}
-        }
-        if (-not ([type]::GetType("System.Data.SQLite.SQLiteConnection", $false))) {
-            Add-Content -Path $LogFile -Value "System.Data.SQLite not available. Firefox export may fail. ($sqlitePath)"
-            throw "System.Data.SQLite not available"
-        }
-        $cn = "Data Source=$tmpDb;Version=3;"
-        $conn = New-Object System.Data.SQLite.SQLiteConnection($cn); $conn.Open()
-        $cmd = $conn.CreateCommand()
-        $cmd.CommandText = @"
-SELECT p.url AS url, b.title AS title, b.dateAdded
-FROM moz_bookmarks b
-JOIN moz_places p ON b.fk = p.id
-WHERE p.url IS NOT NULL
-ORDER BY b.dateAdded DESC
-LIMIT 2000
-"@
-        $reader = $cmd.ExecuteReader()
-        while ($reader.Read()) {
-            $url = $reader["url"]
-            $title = if ($reader["title"]) { $reader["title"] } else { $url }
-            $addDate = $reader["dateAdded"]
-            $addAttr = ""
-            if ($addDate -and ($addDate -as [int64])) {
-                try { $addSec = [math]::Floor(($addDate / 1000000)); $addAttr = " ADD_DATE=`"$addSec`"" } catch {}
-            }
-            $html += "<DT><A HREF=`"" + [System.Net.WebUtility]::HtmlEncode($url) + "`"$addAttr>$([System.Net.WebUtility]::HtmlEncode($title))</A>`n"
-        }
-        $reader.Close(); $conn.Close()
-    } catch {
-        Add-Content -Path $LogFile -Value "Firefox export failed for $sqlitePath : $($_.Exception.Message)"
-        $html += "<!-- Firefox export failed: $($_.Exception.Message) -->`n"
-    } finally {
-        if (Test-Path $tmpDb) { Remove-Item $tmpDb -Force -ErrorAction SilentlyContinue }
-    }
-    $html += "</DL><p>"
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($html); [System.IO.File]::WriteAllBytes($outputFile, $bytes)
-}
-
-# --------------------
-# Internet Explorer Favorites -> HTML
-function Convert-IEFavoritesToHtml {
-    param([Parameter(Mandatory=$true)][string]$favPath, [Parameter(Mandatory=$true)][string]$outputFile)
-    $html = Start-BookmarkHtml "Internet Explorer Favorites"
-    if (-not (Test-Path $favPath)) { Add-Content -Path $LogFile -Value "IE Favorites path not found: $favPath" }
-    else {
-        $urls = Get-ChildItem $favPath -Recurse -Include *.url -ErrorAction SilentlyContinue
-        foreach ($u in $urls) {
-            $content = Get-Content $u.FullName -ErrorAction SilentlyContinue
-            $url = ($content | Where-Object { $_ -like "URL=*" }) -replace "URL=", ""
-            $html += "<DT><A HREF=`"" + [System.Net.WebUtility]::HtmlEncode($url) + "`">$([System.Net.WebUtility]::HtmlEncode($u.BaseName))</A>`n"
-        }
-    }
-    $html += "</DL><p>"
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($html); [System.IO.File]::WriteAllBytes($outputFile, $bytes)
-}
-
-# --------------------
-# Detect installed browsers and populate menu
-$AvailableBrowsers = @{}
-foreach ($browser in $BrowserPaths.Keys) {
-    $path = $BrowserPaths[$browser]
-    if ($browser -eq "Mozilla Firefox") {
-        if (Test-Path $path) {
-            $profiles = Get-ChildItem $path -Directory -ErrorAction SilentlyContinue
-            foreach ($profile in $profiles) {
-                $places = Join-Path $profile.FullName "places.sqlite"
-                if (Test-Path $places) { $AvailableBrowsers["$browser ($($profile.Name))"] = $places }
-            }
-        }
-    } else {
-        if (Test-Path $path) { $AvailableBrowsers[$browser] = $path }
-    }
-}
-
-if ($AvailableBrowsers.Count -eq 0) { Write-Host "No supported browsers found."; exit }
-
-# Menu display
-Write-Host "`nDetected browsers with bookmark/favorite files:`n"
-$i = 1; $BrowserIndex = @{}
-foreach ($browser in $AvailableBrowsers.Keys) {
-    Write-Host "[$i] $browser"
-    $BrowserIndex[$i] = $browser
-    $i++
-}
-
-$selection = Read-Host "`nEnter number(s) of browser(s) to export (comma separated)"
-$selectedIndexes = $selection -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' }
-
-# Export selected entries
-foreach ($index in $selectedIndexes) {
-    if ($BrowserIndex.ContainsKey([int]$index)) {
-        $browserName = $BrowserIndex[[int]$index]
-        $sourcePath = $AvailableBrowsers[$browserName]
-        $safeName = Make-SafeFileName($browserName.Replace(" ", "_"))
-        $destFile = Join-Path $OutputFolder ($safeName + "_Bookmarks.html")
+    # --------------------
+    # Chromium JSON -> HTML
+    function Convert-ChromiumBookmarksToHtml {
+        param([string]$jsonPath, [string]$outputFile)
+        if (-not (Test-Path $jsonPath)) { throw "Bookmarks JSON not found: $jsonPath" }
 
         try {
-            if ($browserName -like "Google Chrome*") { Convert-ChromiumBookmarksToHtml -jsonPath $sourcePath -outputFile $destFile }
-            elseif ($browserName -like "Microsoft Edge*") { Convert-ChromiumBookmarksToHtml -jsonPath $sourcePath -outputFile $destFile }
-            elseif ($browserName -like "Brave*") { Convert-ChromiumBookmarksToHtml -jsonPath $sourcePath -outputFile $destFile }
-            elseif ($browserName -like "Opera*") { Convert-ChromiumBookmarksToHtml -jsonPath $sourcePath -outputFile $destFile }
-            elseif ($browserName -like "Mozilla Firefox*") { Convert-FirefoxToHtml -sqlitePath $sourcePath -outputFile $destFile }
-            elseif ($browserName -like "Internet Explorer*") { Convert-IEFavoritesToHtml -favPath $sourcePath -outputFile $destFile }
-            else { Add-Content -Path $LogFile -Value "No conversion rule for $browserName"; Write-Host "No conversion rule for $browserName" }
-
-            Write-Host "Exported $browserName bookmarks to $destFile"
-            Add-Content -Path $LogFile -Value "Exported $browserName -> $destFile"
+            $tmp = Join-Path $env:TEMP ("Bookmarks_copy_" + ([System.Guid]::NewGuid().ToString()) + ".json")
+            Copy-Item -Path $jsonPath -Destination $tmp -Force -ErrorAction Stop
         } catch {
-            Write-Host ("Failed to export {0}: {1}" -f $browserName, $_.Exception.Message) -ForegroundColor Red
-            Add-Content -Path $LogFile -Value ("Failed to export {0}: {1}" -f $browserName, $_.Exception.Message)
+            Add-Content -Path $LogFile -Value "Warning: could not copy Bookmarks file. Reading in place. $($_.Exception.Message)"
+            $tmp = $jsonPath
+        }
+
+        $json = Get-Content $tmp -Raw | ConvertFrom-Json -ErrorAction Stop
+        $html = Start-BookmarkHtml "Bookmarks"
+
+        function Build-BookmarksHtml {
+            param($nodes, $level)
+            $out = ""
+            if (-not $nodes) { return $out }
+            foreach ($n in $nodes) {
+                if ($n.type -and ($n.type.ToString().ToLower() -eq "folder")) {
+                    $name = if ($n.name) { $n.name } else { "Folder" }
+                    $add = Convert-ChromeTimestampToUnix $n.date_added
+                    $mod = Convert-ChromeTimestampToUnix $n.date_modified
+                    $attrs = @()
+                    if ($add) { $attrs += "ADD_DATE=`"$add`"" }
+                    if ($mod) { $attrs += "LAST_MODIFIED=`"$mod`"" }
+                    $attrString = if ($attrs.Count -gt 0) { " " + ($attrs -join " ") } else { "" }
+                    $out += ("`t" * $level) + "<DT><H3$attrString>$([System.Net.WebUtility]::HtmlEncode($name))</H3>`n"
+                    $out += ("`t" * $level) + "<DL><p>`n"
+                    if ($n.children) { $out += Build-BookmarksHtml $n.children ($level + 1) }
+                    $out += ("`t" * $level) + "</DL><p>`n"
+                }
+                elseif ($n.url -or ($n.type -and ($n.type.ToString().ToLower() -eq "url"))) {
+                    $title = if ($n.name) { $n.name } else { $n.url }
+                    $url = $n.url
+                    $add = Convert-ChromeTimestampToUnix $n.date_added
+                    $itemAttrs = @()
+                    if ($add) { $itemAttrs += "ADD_DATE=`"$add`"" }
+                    if ($n.icon) { $itemAttrs += "ICON=`"$([System.Net.WebUtility]::HtmlEncode($n.icon))`"" }
+                    $itemAttrString = if ($itemAttrs.Count -gt 0) { " " + ($itemAttrs -join " ") } else { "" }
+                    $out += ("`t" * $level) + "<DT><A HREF=`"" + [System.Net.WebUtility]::HtmlEncode($url) + "`"$itemAttrString>$([System.Net.WebUtility]::HtmlEncode($title))</A>`n"
+                }
+                elseif ($n.children) { $out += Build-BookmarksHtml $n.children $level }
+            }
+            return $out
+        }
+
+        foreach ($rootProp in $json.roots.PSObject.Properties) {
+            $rootName = $rootProp.Name
+            $root = $json.roots.$rootName
+            if (-not $root) { continue }
+            $isToolbar = ($rootName -eq "bookmark_bar")
+            $rootTitle = if ($root.name) { $root.name } else { $rootName }
+            $rootAdd = Convert-ChromeTimestampToUnix $root.date_added
+            $rootMod = Convert-ChromeTimestampToUnix $root.date_modified
+            $attrs = @()
+            if ($rootAdd) { $attrs += "ADD_DATE=`"$rootAdd`"" }
+            if ($rootMod) { $attrs += "LAST_MODIFIED=`"$rootMod`"" }
+            if ($isToolbar) { $attrs += "PERSONAL_TOOLBAR_FOLDER=`"true`"" }
+            $attrString = if ($attrs.Count -gt 0) { " " + ($attrs -join " ") } else { "" }
+            $html += "    <DT><H3$attrString>$([System.Net.WebUtility]::HtmlEncode($rootTitle))</H3>`n"
+            $html += "    <DL><p>`n"
+            $html += Build-BookmarksHtml $root.children 2
+            $html += "    </DL><p>`n"
+        }
+
+        $html += "</DL><p>`n"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($html)
+        [System.IO.File]::WriteAllBytes($outputFile, $bytes)
+        if ($tmp -ne $jsonPath -and (Test-Path $tmp)) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    }
+
+    # --------------------
+    # IE / Firefox functions remain the same
+    # Convert-FirefoxToHtml {...}
+    # Convert-IEFavoritesToHtml {...}
+    # (Omitted for brevity; reuse your existing functions)
+
+    # --------------------
+    # SYSTEM perspective: scan user profiles for Chromium-based browsers
+    $AvailableBrowsers = @{}
+
+    Get-ChildItem "C:\Users" -Directory | ForEach-Object {
+        $profile = $_.FullName
+        $userName = $_.Name
+        if ($userName -notmatch 'Default|Public|All Users|Default User|systemprofile') {
+            # Chrome
+            $chromePath = Join-Path $profile "AppData\Local\Google\Chrome\User Data\Default\Bookmarks"
+            if (Test-Path $chromePath) { $AvailableBrowsers["Google Chrome ($userName)"] = $chromePath }
+            # Edge
+            $edgePath = Join-Path $profile "AppData\Local\Microsoft\Edge\User Data\Default\Bookmarks"
+            if (Test-Path $edgePath) { $AvailableBrowsers["Microsoft Edge ($userName)"] = $edgePath }
+            # Brave
+            $bravePath = Join-Path $profile "AppData\Local\BraveSoftware\Brave-Browser\User Data\Default\Bookmarks"
+            if (Test-Path $bravePath) { $AvailableBrowsers["Brave ($userName)"] = $bravePath }
+            # Opera
+            $operaPath = Join-Path $profile "AppData\Roaming\Opera Software\Opera Stable\Bookmarks"
+            if (Test-Path $operaPath) { $AvailableBrowsers["Opera ($userName)"] = $operaPath }
         }
     }
-}
 
-Write-Host "`nAll done! Bookmarks exported as HTML in: $OutputFolder"
-Add-Content -Path $LogFile -Value "Completed at $(Get-Date -Format u)"
-Read-Host
+    # Firefox (still per profile)
+    $ffBase = "$env:APPDATA\Mozilla\Firefox\Profiles"
+    if (Test-Path $ffBase) {
+        Get-ChildItem $ffBase -Directory | ForEach-Object {
+            $places = Join-Path $_.FullName "places.sqlite"
+            if (Test-Path $places) { $AvailableBrowsers["Mozilla Firefox ($($_.Name))"] = $places }
+        }
+    }
+
+    # IE Favorites (system perspective)
+    $userProfiles = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch 'Default|Public|All Users|Default User|systemprofile' }
+    foreach ($u in $userProfiles) {
+        $favPath = Join-Path $u.FullName "Favorites"
+        if (Test-Path $favPath) { $AvailableBrowsers["Internet Explorer ($($u.Name))"] = $favPath }
+    }
+
+    if ($AvailableBrowsers.Count -eq 0) { Write-Host "No supported browsers found."; exit }
+
+    # Menu display
+    Write-Host "`nDetected browsers with bookmark/favorite files:`n"
+    $i = 1; $BrowserIndex = @{}
+    foreach ($browser in $AvailableBrowsers.Keys) {
+        Write-Host "[$i] $browser"
+        $BrowserIndex[$i] = $browser
+        $i++
+    }
+
+    $selection = Read-Host "`nEnter number(s) of browser(s) to export (comma separated)"
+    $selectedIndexes = $selection -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' }
+
+    # Export selected entries
+    foreach ($index in $selectedIndexes) {
+        if ($BrowserIndex.ContainsKey([int]$index)) {
+            $browserName = $BrowserIndex[[int]$index]
+            $sourcePath = $AvailableBrowsers[$browserName]
+            $safeName = Make-SafeFileName($browserName.Replace(" ", "_"))
+            $destFile = Join-Path $OutputFolder ($safeName + "_Bookmarks.html")
+            try {
+                if ($browserName -like "Google Chrome*" -or $browserName -like "Microsoft Edge*" -or $browserName -like "Brave*" -or $browserName -like "Opera*") {
+                    Convert-ChromiumBookmarksToHtml -jsonPath $sourcePath -outputFile $destFile
+                } elseif ($browserName -like "Mozilla Firefox*") {
+                    Convert-FirefoxToHtml -sqlitePath $sourcePath -outputFile $destFile
+                } elseif ($browserName -like "Internet Explorer*") {
+                    Convert-IEFavoritesToHtml -favPath $sourcePath -outputFile $destFile
+                } else {
+                    Add-Content -Path $LogFile -Value "No conversion rule for $browserName"; Write-Host "No conversion rule for $browserName"
+                }
+                Write-Host "Exported $browserName bookmarks to $destFile"
+                Add-Content -Path $LogFile -Value "Exported $browserName -> $destFile"
+            } catch {
+                Write-Host ("Failed to export {0}: {1}" -f $browserName, $_.Exception.Message) -ForegroundColor Red
+                Add-Content -Path $LogFile -Value ("Failed to export {0}: {1}" -f $browserName, $_.Exception.Message)
+            }
+        }
+    }
+
+    Write-Host "`nAll done! Bookmarks exported as HTML in: $OutputFolder"
+    Add-Content -Path $LogFile -Value "Completed at $(Get-Date -Format u)"
+    Read-Host
 }
 $MenuVar = 999
 
