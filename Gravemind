@@ -660,7 +660,7 @@ $MenuVar = 999
 
 While ($MenuVar -ne 0 ) {
     Clear-Host
-    Write-Host "Version 1.0"
+    Write-Host "Version 2.0"
     Write-Host "----------------------------------"
     Write-Host "Pick your poison." -ForegroundColor Red
     Write-Host "----------------------------------"
